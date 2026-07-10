@@ -1,0 +1,25 @@
+Pinokio Proprietary License
+
+Copyright (c) 2026 Puppetflow. All rights reserved.
+
+1. Grant. Use, reproduction, modification, and deployment of this software
+   are permitted solely as part of the Puppetflow product and solely by
+   Puppetflow and its authorized operators.
+
+2. Restrictions. Except as stated in section 1, no rights are granted. In
+   particular, you may not, in whole or in part:
+   a. use this software in any product or service other than Puppetflow;
+   b. copy, distribute, sublicense, sell, rent, lease, or lend this
+      software;
+   c. publish or disclose the source code to any third party;
+   d. remove or alter this notice.
+
+3. Third-party components. This software depends on open source components
+   (Rust crates, Chromium) which remain governed by their own licenses.
+   This license applies only to the Pinokio source code itself.
+
+4. No warranty. THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES
+   OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
