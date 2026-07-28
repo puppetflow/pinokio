@@ -2,8 +2,11 @@ name: Build and push Docker image
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - master
+    paths:
+      - 'version.txt'
+      - 'enforce.txt'
   workflow_dispatch:
 
 env:
