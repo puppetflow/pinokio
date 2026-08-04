@@ -1,4 +1,4 @@
-<a href="https://puppetflow.com"><img src="https://puppetflow.com/public/img/puppetflow-promo-banner.png" width="100%" alt="Puppetflow" /></a>
+<a href="https://puppetflow.com"><img src="https://www.puppetflow.com/img/puppetflow-promo-banner.png" width="100%" alt="Puppetflow" /></a>
 
 # Pinokio
 
