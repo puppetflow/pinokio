@@ -1,3 +1,5 @@
+<a href="https://puppetflow.com"><img src="https://puppetflow.com/public/img/puppetflow-promo-banner.png" width="100%" alt="Puppetflow" /></a>
+
 # Pinokio
 
 Minimal Chromium gateway written in Rust. It lets remote Puppeteer and Playwright clients connect to isolated Chromium instances over WebSocket, with token authentication, a concurrency limit, a FIFO queue and robust process cleanup.
