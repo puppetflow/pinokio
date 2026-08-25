@@ -1,4 +1,4 @@
-# ── Build stage ──
+# Build stage
 FROM rust:1-slim-trixie AS builder
 
 WORKDIR /build
@@ -13,7 +13,7 @@ RUN mkdir src \
 COPY src ./src
 RUN cargo build --release
 
-# ── Runtime stage ──
+# Runtime stage
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
