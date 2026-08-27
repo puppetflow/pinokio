@@ -44,18 +44,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -63,7 +51,6 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.architecture }}
           cache-to: type=gha,scope=${{ matrix.architecture }},mode=max
 
@@ -90,6 +77,13 @@ jobs:
       packages: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < version.txt)" >> "$GITHUB_OUTPUT"
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -107,34 +101,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-
       - name: Create multi-architecture manifest
         env:
-          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           image="${REGISTRY}/${IMAGE_NAME}"
-          tag_args=()
           sources=()
-
-          while IFS= read -r tag; do
-            if [ -n "$tag" ]; then
-              tag_args+=(--tag "$tag")
-            fi
-          done <<< "$TAGS"
 
           for digest in /tmp/digests/*; do
             sources+=("${image}@sha256:$(basename "$digest")")
           done
 
-          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          docker buildx imagetools create \
+            --tag "${image}:latest" \
+            --tag "${image}:v${VERSION}" \
+            --tag "${image}:${GITHUB_SHA}" \
+            "${sources[@]}"
+
+  release:
+    needs: merge-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < version.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          body: |
+            ## Docker
+
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.value }}
+            ```
