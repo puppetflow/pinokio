@@ -5,6 +5,8 @@ use thiserror::Error;
 /// Errors surfaced to clients before the WebSocket upgrade completes.
 #[derive(Debug, Error)]
 pub enum GatewayError {
+    #[error("invalid launch options: {0}")]
+    InvalidLaunchOptions(String),
     #[error("missing or invalid token")]
     Unauthorized,
     #[error("session queue is full")]
@@ -22,6 +24,7 @@ pub enum GatewayError {
 impl GatewayError {
     pub fn status_code(&self) -> StatusCode {
         match self {
+            GatewayError::InvalidLaunchOptions(_) => StatusCode::BAD_REQUEST,
             GatewayError::Unauthorized => StatusCode::UNAUTHORIZED,
             GatewayError::QueueFull => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::ShuttingDown | GatewayError::ChromiumUnavailable(_) => {

@@ -114,6 +114,15 @@ async fn ws_handler(
     if state.shutdown.is_cancelled() {
         return Err(GatewayError::ShuttingDown);
     }
+    let launch_options = params
+        .get("launch")
+        .map(|raw| {
+            serde_json::from_str::<chromium::LaunchOptions>(raw)
+                .map_err(|error| GatewayError::InvalidLaunchOptions(error.to_string()))
+        })
+        .transpose()?
+        .unwrap_or_default()
+        .validate()?;
 
     let session_id = Uuid::new_v4();
 
@@ -130,7 +139,7 @@ async fn ws_handler(
 
     info!(%session_id, state = "starting", "session_starting");
     let starting_at = Instant::now();
-    let mut chromium = chromium::launch(&state.config)
+    let mut chromium = chromium::launch(&state.config, &launch_options)
         .await
         .inspect_err(|e| log_admission_failure(&session_id, e))?;
     let startup_time = starting_at.elapsed();
@@ -185,6 +194,6 @@ fn log_admission_failure(session_id: &Uuid, error: &GatewayError) {
             warn!(%session_id, %reason, "chromium_unavailable")
         }
         GatewayError::ShuttingDown => info!(%session_id, "rejected_during_shutdown"),
-        GatewayError::Unauthorized => {}
+        GatewayError::InvalidLaunchOptions(_) | GatewayError::Unauthorized => {}
     }
 }

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
+use serde::Deserialize;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tracing::{debug, warn};
@@ -13,6 +14,39 @@ use crate::errors::GatewayError;
 const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
 const PORT_FILE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SIGTERM_GRACE: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchOptions {
+    pub proxy_server: Option<String>,
+    pub proxy_bypass_list: Option<String>,
+    pub disable_web_security: Option<bool>,
+}
+
+impl LaunchOptions {
+    pub fn validate(self) -> Result<Self, GatewayError> {
+        if let Some(proxy_server) = &self.proxy_server
+            && (proxy_server.len() > 2048
+                || proxy_server.chars().any(char::is_control)
+                || !["http://", "https://", "socks4://", "socks5://"]
+                    .iter()
+                    .any(|scheme| proxy_server.starts_with(scheme)))
+        {
+            return Err(GatewayError::InvalidLaunchOptions(
+                "proxyServer must be a valid HTTP, HTTPS, SOCKS4, or SOCKS5 URL".into(),
+            ));
+        }
+        if let Some(proxy_bypass_list) = &self.proxy_bypass_list
+            && (proxy_bypass_list.len() > 2048 || proxy_bypass_list.chars().any(char::is_control))
+        {
+            return Err(GatewayError::InvalidLaunchOptions(
+                "proxyBypassList contains invalid characters".into(),
+            ));
+        }
+
+        Ok(self)
+    }
+}
 
 /// A single Chromium process bound to one session.
 pub struct Chromium {
@@ -26,7 +60,10 @@ pub struct Chromium {
 
 /// Launches an isolated Chromium and waits until it publishes its CDP
 /// endpoint through the DevToolsActivePort file in its user data dir.
-pub async fn launch(config: &Config) -> Result<Chromium, GatewayError> {
+pub async fn launch(
+    config: &Config,
+    launch_options: &LaunchOptions,
+) -> Result<Chromium, GatewayError> {
     let user_data_dir = TempDir::with_prefix("pinokio-")
         .map_err(|e| GatewayError::ChromiumUnavailable(format!("temp dir creation failed: {e}")))?;
 
@@ -62,6 +99,15 @@ pub async fn launch(config: &Config) -> Result<Chromium, GatewayError> {
         if let Some(tag) = language.split(':').next() {
             args.push(format!("--lang={tag}"));
         }
+    }
+    if let Some(proxy_server) = &launch_options.proxy_server {
+        args.push(format!("--proxy-server={proxy_server}"));
+    }
+    if let Some(proxy_bypass_list) = &launch_options.proxy_bypass_list {
+        args.push(format!("--proxy-bypass-list={proxy_bypass_list}"));
+    }
+    if launch_options.disable_web_security == Some(true) {
+        args.push("--disable-web-security".into());
     }
     args.extend(config.chrome_extra_args.iter().cloned());
 
