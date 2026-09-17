@@ -33,6 +33,15 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Report the browser actually in use. CHROME_PATH may point to any
+    // Chromium-based binary mounted into the container (see README).
+    let browser_version = chromium::version(&config).await;
+    info!(
+        path = %config.chrome_path.display(),
+        version = browser_version.as_deref().unwrap_or("unknown"),
+        "browser binary"
+    );
+
     let addr = SocketAddr::new(config.host, config.port);
     let grace = config.shutdown_grace_period;
     let state = Arc::new(server::AppState::new(config));

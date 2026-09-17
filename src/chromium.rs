@@ -14,6 +14,31 @@ use crate::errors::GatewayError;
 const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
 const PORT_FILE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SIGTERM_GRACE: Duration = Duration::from_secs(3);
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Runs `<binary> --version` and returns its trimmed output, or `None` when
+/// the binary does not answer. Used for startup diagnostics only, so operators
+/// can confirm which browser (stock Chromium, Chrome, CloakBrowser...) is in use.
+pub async fn version(config: &Config) -> Option<String> {
+    let mut command = Command::new(&config.chrome_path);
+    if config.chrome_no_sandbox {
+        command.arg("--no-sandbox");
+    }
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+
+    let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -37,9 +37,10 @@ COPY --from=builder /build/target/release/pinokio /usr/local/bin/pinokio
 USER pinokio
 WORKDIR /home/pinokio
 
+# CHROME_PATH is intentionally not set: Pinokio uses /opt/browser/chrome when a
+# custom browser is mounted there, and falls back to /usr/bin/chromium.
 ENV HOST=0.0.0.0 \
     PORT=3000 \
-    CHROME_PATH=/usr/bin/chromium \
     CHROME_NO_SANDBOX=true \
     CHROME_DISABLE_DEV_SHM_USAGE=true
 

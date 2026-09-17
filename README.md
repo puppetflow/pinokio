@@ -90,7 +90,7 @@ All configuration is done through environment variables, validated at startup. I
 | `QUEUE_TIMEOUT_MS` | `600000` | Maximum wait in the queue |
 | `CHROME_STARTUP_TIMEOUT_MS` | `15000` | Time Chromium gets to publish its CDP endpoint |
 | `SHUTDOWN_GRACE_PERIOD_MS` | `10000` | Time given to active sessions after SIGTERM/SIGINT |
-| `CHROME_PATH` | `/usr/bin/chromium` | Chromium or Google Chrome binary |
+| `CHROME_PATH` | auto | Browser binary. Unset: `/opt/browser/chrome` if present, else `/usr/bin/chromium` |
 | `CHROME_HEADLESS` | `true` | Run with `--headless=new` |
 | `CHROME_NO_SANDBOX` | `true` | Add `--no-sandbox` (see security notes) |
 | `CHROME_DISABLE_DEV_SHM_USAGE` | `true` | Add `--disable-dev-shm-usage` |
@@ -100,6 +100,22 @@ All configuration is done through environment variables, validated at startup. I
 | `LANGUAGE` | system | Locale, also passed as Chromium `--lang` |
 
 Clients cannot modify Chromium launch arguments. Query parameters other than `token` are ignored. Server-wide flags such as `--disable-web-security` or `--window-size` go in `CHROME_EXTRA_ARGS`.
+
+### Custom browser binary
+
+Pinokio does not care which Chromium it launches: stock Chromium, Google Chrome, Chrome for Testing or a stealth build such as CloakBrowser all work, as long as the binary speaks CDP and accepts the standard flags above. Pinokio never downloads or bundles third-party browsers; you install them on the host and mount the whole browser directory (executable, shared libraries, resources) at `/opt/browser`:
+
+```yaml
+services:
+  pinokio:
+    volumes:
+      - /home/user/.cloakbrowser/chromium-146.0.7680.177.5:/opt/browser:ro
+    environment:
+      # Optional vendor-specific flags
+      CHROME_EXTRA_ARGS: "--fingerprint-platform=windows"
+```
+
+Binary resolution when `CHROME_PATH` is unset: `/opt/browser/chrome` if it exists, otherwise `/usr/bin/chromium`. Set `CHROME_PATH` explicitly only when the executable has another name. Pinokio runs as uid 10001, so the mounted files must be world-readable and the executable world-executable. At startup Pinokio logs a `browser binary` line with the path and the `--version` output of the browser it will launch. Third-party binaries keep their own license terms.
 
 ## Client compatibility
 

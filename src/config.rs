@@ -18,6 +18,13 @@ fn invalid(name: &'static str, reason: impl Into<String>) -> ConfigError {
     }
 }
 
+/// Browser shipped in the Docker image.
+const BUNDLED_BROWSER_PATH: &str = "/usr/bin/chromium";
+/// Where a user-provided browser directory is mounted (see README). When this
+/// executable exists and CHROME_PATH is not set, it takes precedence over the
+/// bundled browser.
+const CUSTOM_BROWSER_PATH: &str = "/opt/browser/chrome";
+
 /// Server configuration, loaded from environment variables and validated at startup.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -99,7 +106,17 @@ impl Config {
 
         let max_queue_length: usize = env_parse("MAX_QUEUE_LENGTH", 20usize)?;
 
-        let chrome_path = PathBuf::from(env_str("CHROME_PATH", "/usr/bin/chromium"));
+        let chrome_path = match env::var("CHROME_PATH") {
+            Ok(raw) if !raw.trim().is_empty() => PathBuf::from(raw.trim()),
+            _ => {
+                let custom = PathBuf::from(CUSTOM_BROWSER_PATH);
+                if custom.is_file() {
+                    custom
+                } else {
+                    PathBuf::from(BUNDLED_BROWSER_PATH)
+                }
+            }
+        };
         if !chrome_path.is_file() {
             return Err(invalid(
                 "CHROME_PATH",
