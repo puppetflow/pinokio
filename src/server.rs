@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::extract::ws::WebSocketUpgrade;
@@ -21,6 +22,13 @@ use crate::{auth, chromium, proxy, session};
 
 pub struct AppState {
     pub config: Config,
+    /// Identity of the launched browser binary. Set once the binary is
+    /// available: immediately for bundled or mounted browsers, after the
+    /// download for a browser archive. Sessions are refused with 503 until then.
+    pub browser: OnceLock<chromium::BrowserInfo>,
+    /// Set when browser preparation failed; the process then shuts down and
+    /// exits non-zero so the orchestrator restarts it or surfaces the error.
+    pub startup_failed: AtomicBool,
     pub gate: Gate,
     /// Cancelled as soon as SIGTERM/SIGINT is received: rejects new
     /// requests and wakes queued waiters.
@@ -38,6 +46,8 @@ impl AppState {
         let gate = Gate::new(config.max_concurrent_sessions, config.max_queue_length);
         Self {
             config,
+            browser: OnceLock::new(),
+            startup_failed: AtomicBool::new(false),
             gate,
             shutdown: CancellationToken::new(),
             session_cancel: CancellationToken::new(),
@@ -68,6 +78,13 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
+    if state.browser.get().is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "ready": false, "reason": "browser_installing" })),
+        )
+            .into_response();
+    }
     if !state.gate.has_capacity() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -92,6 +109,7 @@ async fn status(
         "max_concurrent_sessions": state.gate.max_sessions(),
         "queued_sessions": state.gate.queued_sessions(),
         "max_queue_length": state.gate.max_queue(),
+        "browser": state.browser.get(),
     }))
     .into_response()
 }
@@ -113,6 +131,9 @@ async fn ws_handler(
     }
     if state.shutdown.is_cancelled() {
         return Err(GatewayError::ShuttingDown);
+    }
+    if state.browser.get().is_none() {
+        return Err(GatewayError::BrowserInstalling);
     }
     let launch_options = params
         .get("launch")
@@ -194,6 +215,8 @@ fn log_admission_failure(session_id: &Uuid, error: &GatewayError) {
             warn!(%session_id, %reason, "chromium_unavailable")
         }
         GatewayError::ShuttingDown => info!(%session_id, "rejected_during_shutdown"),
-        GatewayError::InvalidLaunchOptions(_) | GatewayError::Unauthorized => {}
+        GatewayError::BrowserInstalling
+        | GatewayError::InvalidLaunchOptions(_)
+        | GatewayError::Unauthorized => {}
     }
 }

@@ -1,4 +1,5 @@
 mod auth;
+mod browser_archive;
 mod chromium;
 mod config;
 mod errors;
@@ -10,6 +11,7 @@ mod session;
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{error, info};
@@ -33,15 +35,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Report the browser actually in use. CHROME_PATH may point to any
-    // Chromium-based binary mounted into the container (see README).
-    let browser_version = chromium::version(&config).await;
-    info!(
-        path = %config.chrome_path.display(),
-        version = browser_version.as_deref().unwrap_or("unknown"),
-        "browser binary"
-    );
-
     let addr = SocketAddr::new(config.host, config.port);
     let grace = config.shutdown_grace_period;
     let state = Arc::new(server::AppState::new(config));
@@ -63,9 +56,15 @@ async fn main() -> ExitCode {
         "pinokio listening"
     );
 
+    // The browser is prepared while the server already answers /health, so a
+    // first-start browser archive download does not trip liveness checks.
+    // Sessions and /ready return 503 until the binary is confirmed.
+    tokio::spawn(prepare_browser(Arc::clone(&state)));
+
     // Graceful shutdown sequence:
-    // 1. SIGTERM/SIGINT cancels `shutdown`: new requests get 503 and queued
-    //    waiters are woken with 503 immediately.
+    // 1. SIGTERM/SIGINT (or a failed browser preparation) cancels
+    //    `shutdown`: new requests get 503 and queued waiters are woken with
+    //    503 immediately.
     // 2. Active sessions get `grace` to finish on their own.
     // 3. `session_cancel` then closes remaining proxies, which terminates
     //    their Chromium processes and removes their temp dirs.
@@ -82,6 +81,7 @@ async fn main() -> ExitCode {
         tokio::select! {
             _ = sigterm.recv() => info!("received SIGTERM"),
             _ = tokio::signal::ctrl_c() => info!("received SIGINT"),
+            _ = shutdown_state.shutdown.cancelled() => info!("shutdown requested internally"),
         }
         shutdown_state.shutdown.cancel();
         info!(
@@ -117,6 +117,55 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if state.startup_failed.load(Ordering::SeqCst) {
+        error!("pinokio stopped because the browser could not be prepared");
+        return ExitCode::FAILURE;
+    }
     info!("pinokio stopped");
     ExitCode::SUCCESS
+}
+
+/// Makes the configured browser available, then records its identity so
+/// sessions can be admitted. CHROME_PATH may point to any Chromium-based
+/// binary mounted into the container (see README); a BROWSER_ARCHIVE_URL is
+/// fetched on first start onto the operator's volume.
+async fn prepare_browser(state: Arc<server::AppState>) {
+    let config = &state.config;
+    if let Some(archive) = &config.browser_archive
+        && config.browser_engine == config::BrowserEngine::Downloaded
+    {
+        let installed = browser_archive::ensure_installed(
+            &config.browser_archive_root,
+            &archive.url,
+            archive.sha256.as_deref(),
+        )
+        .await;
+        if let Err(e) = installed {
+            error!("browser archive installation failed: {e}");
+            state.startup_failed.store(true, Ordering::SeqCst);
+            state.shutdown.cancel();
+            return;
+        }
+    }
+    if !config.chrome_path.is_file() {
+        error!(
+            "browser binary {} is missing after preparation",
+            config.chrome_path.display()
+        );
+        state.startup_failed.store(true, Ordering::SeqCst);
+        state.shutdown.cancel();
+        return;
+    }
+
+    let browser = chromium::identify(config).await;
+    info!(
+        engine = %browser.engine,
+        path = %browser.path,
+        name = browser.name.as_deref().unwrap_or("unknown"),
+        version = browser.version.as_deref().unwrap_or("unknown"),
+        sha256 = browser.sha256.as_deref().unwrap_or("unknown"),
+        "browser binary"
+    );
+    // Only this task sets the value, so a failure here cannot happen.
+    let _ = state.browser.set(browser);
 }

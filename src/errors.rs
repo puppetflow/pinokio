@@ -13,6 +13,8 @@ pub enum GatewayError {
     QueueFull,
     #[error("server is shutting down")]
     ShuttingDown,
+    #[error("browser is still being installed, retry shortly")]
+    BrowserInstalling,
     #[error("timed out waiting for a session slot")]
     QueueTimeout,
     #[error("timed out waiting for Chromium to start")]
@@ -27,9 +29,9 @@ impl GatewayError {
             GatewayError::InvalidLaunchOptions(_) => StatusCode::BAD_REQUEST,
             GatewayError::Unauthorized => StatusCode::UNAUTHORIZED,
             GatewayError::QueueFull => StatusCode::TOO_MANY_REQUESTS,
-            GatewayError::ShuttingDown | GatewayError::ChromiumUnavailable(_) => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            GatewayError::ShuttingDown
+            | GatewayError::BrowserInstalling
+            | GatewayError::ChromiumUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GatewayError::QueueTimeout | GatewayError::ChromiumStartupTimeout => {
                 StatusCode::GATEWAY_TIMEOUT
             }

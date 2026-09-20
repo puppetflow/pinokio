@@ -31,6 +31,7 @@ src/
   auth.rs        token check (?token= or Authorization: Bearer), constant-time compare
   queue.rs       concurrency gate: session slots + FIFO queue
   chromium.rs    process launch, DevToolsActivePort discovery, SIGTERM/SIGKILL teardown
+  browser_archive.rs  first-start download of an operator-chosen browser archive
   session.rs     active session lifecycle and guaranteed cleanup
   proxy.rs       transparent bidirectional WebSocket relay (no CDP interpretation)
 ```
@@ -62,7 +63,7 @@ Each Chromium runs in its own process group (setsid). Teardown signals only that
 | `GET /` or `GET /chromium` | WebSocket upgrade, creates a session and proxies CDP |
 | `GET /health` | Liveness: `{"status":"ok"}` |
 | `GET /ready` | Readiness: 200 when accepting requests, 503 when shutting down or saturated |
-| `GET /status` | Counters: active/queued sessions vs limits (token-protected when auth is on) |
+| `GET /status` | Counters: active/queued sessions vs limits, plus the `browser` identity block (`engine`, `name`, `version`, `sha256`, `path`); token-protected when auth is on |
 
 HTTP errors before the upgrade:
 
@@ -90,32 +91,40 @@ All configuration is done through environment variables, validated at startup. I
 | `QUEUE_TIMEOUT_MS` | `600000` | Maximum wait in the queue |
 | `CHROME_STARTUP_TIMEOUT_MS` | `15000` | Time Chromium gets to publish its CDP endpoint |
 | `SHUTDOWN_GRACE_PERIOD_MS` | `10000` | Time given to active sessions after SIGTERM/SIGINT |
-| `CHROME_PATH` | auto | Browser binary. Unset: `/opt/browser/chrome` if present, else `/usr/bin/chromium` |
+| `BROWSER_ARCHIVE_URL` | empty | `.tar.gz` containing a `chrome` executable, downloaded into `/opt/browsers` on first start and launched instead of the bundled Chromium |
+| `BROWSER_ARCHIVE_SHA256` | empty | Optional hex SHA-256 the archive must match; the actual hash is logged either way |
+| `CHROME_PATH` | auto | Browser binary. Unset: `/opt/browser/chrome` if present, else the downloaded archive, else `/usr/bin/chromium` |
 | `CHROME_HEADLESS` | `true` | Run with `--headless=new` |
 | `CHROME_NO_SANDBOX` | `true` | Add `--no-sandbox` (see security notes) |
 | `CHROME_DISABLE_DEV_SHM_USAGE` | `true` | Add `--disable-dev-shm-usage` |
 | `CHROME_EXTRA_ARGS` | empty | Extra Chromium args, whitespace-separated |
 | `LOG_LEVEL` | `info` | trace, debug, info, warn, error |
 | `TZ` | system | Timezone inherited by Chromium |
-| `LANGUAGE` | system | Locale, also passed as Chromium `--lang` |
+| `LANGUAGE` | system | Default browser language (`fr-FR` or `fr-FR:fr`), passed as Chromium `--lang` and `--accept-lang` |
 
-Clients cannot modify Chromium launch arguments. Query parameters other than `token` are ignored. Server-wide flags such as `--disable-web-security` or `--window-size` go in `CHROME_EXTRA_ARGS`.
+Clients cannot inject arbitrary Chromium launch arguments. The only per-session knobs are the JSON `launch` query parameter fields `proxyServer`, `proxyBypassList`, `disableWebSecurity` and `acceptLanguage` (comma-separated BCP 47 tags, overrides `LANGUAGE`); everything else is validated and mapped to fixed flags server-side. Other server-wide flags such as `--window-size` go in `CHROME_EXTRA_ARGS`.
 
-### Custom browser binary
+The bundled Debian Chromium ships only the `en-US` locale pack. `--accept-lang` does not depend on locale packs, so websites receive the requested `Accept-Language` regardless. Only the browser UI strings and the default JavaScript `Intl` locale need the `chromium-l10n` package.
 
-Pinokio does not care which Chromium it launches: stock Chromium, Google Chrome, Chrome for Testing or a stealth build such as CloakBrowser all work, as long as the binary speaks CDP and accepts the standard flags above. Pinokio never downloads or bundles third-party browsers; you install them on the host and mount the whole browser directory (executable, shared libraries, resources) at `/opt/browser`:
+### Browser binary
+
+The published image bundles one browser, the Debian `chromium` package at `/usr/bin/chromium`. Pinokio does not care which Chromium-based build it launches, though: Google Chrome, Chrome for Testing, or a patched build such as [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) all work as long as the binary speaks CDP and accepts the standard flags above. Two ways to use another one, both keeping third-party binaries out of the image and under the operator's own license acceptance:
+
+**Downloaded archive.** Set `BROWSER_ARCHIVE_URL` to a `.tar.gz` whose root (or single top-level directory) contains `chrome`. On first start Pinokio streams the archive into `/opt/browsers/<url-hash-prefix>/`, logs its SHA-256, extracts it and fixes permissions. Mount a volume at `/opt/browsers` so restarts skip the download; a new URL installs next to the previous one, re-publishing under the same URL requires clearing the volume. Optionally set `BROWSER_ARCHIVE_SHA256` to the hash published by the author: Pinokio then refuses anything else. A checksum or download failure aborts the install and the process exits non-zero. While the download runs, `/health` answers, `/ready` returns 503 with `browser_installing`, and session requests get 503 so clients retry.
+
+**Mounted directory.** Mount the whole browser directory (executable, shared libraries, resources) at `/opt/browser`; it takes precedence over a downloaded archive and over the bundled Chromium:
 
 ```yaml
 services:
   pinokio:
     volumes:
-      - /home/user/.cloakbrowser/chromium-146.0.7680.177.5:/opt/browser:ro
+      - /home/user/my-browser:/opt/browser:ro
     environment:
       # Optional vendor-specific flags
-      CHROME_EXTRA_ARGS: "--fingerprint-platform=windows"
+      CHROME_EXTRA_ARGS: "--some-vendor-flag"
 ```
 
-Binary resolution when `CHROME_PATH` is unset: `/opt/browser/chrome` if it exists, otherwise `/usr/bin/chromium`. Set `CHROME_PATH` explicitly only when the executable has another name. Pinokio runs as uid 10001, so the mounted files must be world-readable and the executable world-executable. At startup Pinokio logs a `browser binary` line with the path and the `--version` output of the browser it will launch. Third-party binaries keep their own license terms.
+Binary resolution when `CHROME_PATH` is unset: `/opt/browser/chrome` if it exists, else the downloaded archive, else `/usr/bin/chromium`. Set `CHROME_PATH` explicitly only when the executable has another name. Pinokio runs as uid 10001, so mounted files must be world-readable and the executable world-executable. Vendor flags are never added implicitly; pass them through `CHROME_EXTRA_ARGS`. At startup Pinokio logs a `browser binary` line with the engine (`chromium`, `downloaded` or `custom`), the path, the product name and version from `--version`, and the SHA-256 of the executable. The same fields are returned in the `browser` block of `GET /status`, so clients can confirm which build served them: two builds of the same Chromium release (stock vs patched) share a version string but never a hash. Compare it with `sha256sum` on the file. Third-party binaries keep their own license terms.
 
 ## Client compatibility
 

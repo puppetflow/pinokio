@@ -28,17 +28,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Non-root user. Chromium runs with --no-sandbox by default in containers,
 # so not running as root is the main isolation layer here.
+# /opt/browsers is where Pinokio installs the archive named by
+# BROWSER_ARCHIVE_URL on first start. It ships empty: the image only bundles
+# Chromium, any other browser is downloaded by the operator's own instance
+# (mount a volume there to keep it across restarts).
 RUN useradd --create-home --uid 10001 pinokio \
-    && mkdir -p /app/data/execution \
-    && chown -R pinokio:pinokio /app
+    && mkdir -p /app/data/execution /opt/browsers \
+    && chown -R pinokio:pinokio /app /opt/browsers
 
 COPY --from=builder /build/target/release/pinokio /usr/local/bin/pinokio
 
 USER pinokio
 WORKDIR /home/pinokio
 
-# CHROME_PATH is intentionally not set: Pinokio uses /opt/browser/chrome when a
-# custom browser is mounted there, and falls back to /usr/bin/chromium.
+# Browser resolution: CHROME_PATH when set, else /opt/browser/chrome when a
+# custom browser is mounted there, else the archive named by
+# BROWSER_ARCHIVE_URL (+ BROWSER_ARCHIVE_SHA256) installed under /opt/browsers
+# on first start, else the bundled /usr/bin/chromium.
 ENV HOST=0.0.0.0 \
     PORT=3000 \
     CHROME_NO_SANDBOX=true \
