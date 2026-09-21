@@ -20,6 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
         chromium-l10n \
         fonts-liberation \
+        fonts-dejavu-core \
+        fonts-freefont-ttf \
+        fonts-crosextra-carlito \
+        fonts-crosextra-caladea \
+        fonts-noto-core \
+        fonts-noto-cjk \
         fonts-noto-color-emoji \
         libegl1 \
         libegl-mesa0 \

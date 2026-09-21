@@ -101,10 +101,10 @@ All configuration is done through environment variables, validated at startup. I
 | `CHROME_DISABLE_DEV_SHM_USAGE` | `true` | Add `--disable-dev-shm-usage` |
 | `CHROME_EXTRA_ARGS` | empty | Extra Chromium args, whitespace-separated |
 | `LOG_LEVEL` | `info` | trace, debug, info, warn, error |
-| `TZ` | system | Timezone inherited by Chromium |
+| `TZ` | system | Default time zone of every session. Unset, a zone is derived from the session language (`fr-FR` gives `Europe/Paris`) so containers do not report UTC |
 | `LANGUAGE` | system | Default browser language (`fr-FR` or `fr-FR:fr`), passed to Chromium as `--accept-lang` and as its own `LANGUAGE` environment |
 
-Clients cannot inject arbitrary Chromium launch arguments. The only per-session knobs are the JSON `launch` query parameter fields `proxyServer`, `proxyBypassList`, `disableWebSecurity`, `acceptLanguage` (comma-separated BCP 47 tags, overrides `LANGUAGE`), `userAgent` (printable ASCII, at most 512 characters, applied with `--user-agent`) and `viewport` (`{"width","height"}`, drives `--window-size` and `--screen-info`); everything else is validated and mapped to fixed flags server-side. Other server-wide flags go in `CHROME_EXTRA_ARGS`.
+Clients cannot inject arbitrary Chromium launch arguments. The only per-session knobs are the JSON `launch` query parameter fields `proxyServer`, `proxyBypassList`, `disableWebSecurity`, `acceptLanguage` (comma-separated BCP 47 tags, overrides `LANGUAGE`), `userAgent` (printable ASCII, at most 512 characters, applied with `--user-agent`), `viewport` (`{"width","height"}`, drives `--window-size` and `--screen-info`) and `timezone` (IANA name such as `Europe/Paris`, passed as `TZ` to the browser process so `Date`, `Intl` and workers agree; overrides the server's `TZ`); everything else is validated and mapped to fixed flags server-side. Other server-wide flags go in `CHROME_EXTRA_ARGS`.
 
 On Linux, Chromium takes its application locale from the `LANGUAGE` environment variable and ignores `--lang`, so each session's primary tag is passed as `LANGUAGE` to the browser process. The image installs `chromium-l10n` next to the bundled Chromium so that locale has its pack: the default JavaScript `Intl` locale then matches `Accept-Language` (a French session resolves `Intl.DateTimeFormat().resolvedOptions().locale` to `fr`, a German one to `de`, not `en-US`), which is one of the consistency checks bot detection runs. `--accept-lang` does not depend on locale packs, so websites receive the requested `Accept-Language` regardless.
 

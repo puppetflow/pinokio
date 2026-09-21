@@ -147,6 +147,10 @@ pub struct LaunchOptions {
     /// viewport matches it, and the emulated screen is a standard resolution
     /// that fits the window, as on a desktop.
     pub viewport: Option<Viewport>,
+    /// IANA time zone (e.g. "Europe/Paris") applied to the browser process,
+    /// so `Intl`, `Date` and workers all agree. Unset, the server's TZ is kept,
+    /// or one is derived from the session language when the server has none.
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -226,8 +230,129 @@ fn language_args(raw: &str) -> Option<(String, String)> {
     Some((primary.to_string(), accept.join(",")))
 }
 
+/// IANA zone names are path-like: "Europe/Paris", "America/Argentina/Buenos_Aires",
+/// "Etc/GMT+2", "UTC".
+fn is_timezone(tz: &str) -> bool {
+    !tz.is_empty()
+        && tz.len() <= 64
+        && !tz.starts_with('/')
+        && !tz.ends_with('/')
+        && !tz.contains("..")
+        && tz
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '+' | '-'))
+}
+
+/// A plausible time zone for a language tag: a UTC browser whose language is
+/// French is a server tell, whereas the most populous zone for the region (or
+/// for the language when there is no region) passes the usual consistency
+/// checks. Only a fallback: the server's TZ and the session's own zone win.
+fn timezone_for_language(primary: &str) -> Option<&'static str> {
+    let mut subtags = primary.split('-');
+    let language = subtags.next()?.to_ascii_lowercase();
+    let region = subtags
+        .find(|subtag| subtag.len() == 2 && subtag.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(str::to_ascii_uppercase);
+    let by_region = match region.as_deref()? {
+        "FR" => "Europe/Paris",
+        "BE" => "Europe/Brussels",
+        "CH" => "Europe/Zurich",
+        "LU" => "Europe/Luxembourg",
+        "DE" => "Europe/Berlin",
+        "AT" => "Europe/Vienna",
+        "NL" => "Europe/Amsterdam",
+        "ES" => "Europe/Madrid",
+        "IT" => "Europe/Rome",
+        "PT" => "Europe/Lisbon",
+        "GB" => "Europe/London",
+        "IE" => "Europe/Dublin",
+        "PL" => "Europe/Warsaw",
+        "CZ" => "Europe/Prague",
+        "SE" => "Europe/Stockholm",
+        "NO" => "Europe/Oslo",
+        "DK" => "Europe/Copenhagen",
+        "FI" => "Europe/Helsinki",
+        "GR" => "Europe/Athens",
+        "RO" => "Europe/Bucharest",
+        "HU" => "Europe/Budapest",
+        "UA" => "Europe/Kyiv",
+        "RU" => "Europe/Moscow",
+        "TR" => "Europe/Istanbul",
+        "IL" => "Asia/Jerusalem",
+        "SA" => "Asia/Riyadh",
+        "AE" => "Asia/Dubai",
+        "IN" => "Asia/Kolkata",
+        "CN" => "Asia/Shanghai",
+        "HK" => "Asia/Hong_Kong",
+        "TW" => "Asia/Taipei",
+        "JP" => "Asia/Tokyo",
+        "KR" => "Asia/Seoul",
+        "SG" => "Asia/Singapore",
+        "TH" => "Asia/Bangkok",
+        "VN" => "Asia/Ho_Chi_Minh",
+        "ID" => "Asia/Jakarta",
+        "PH" => "Asia/Manila",
+        "AU" => "Australia/Sydney",
+        "NZ" => "Pacific/Auckland",
+        "US" => "America/New_York",
+        "CA" => "America/Toronto",
+        "MX" => "America/Mexico_City",
+        "BR" => "America/Sao_Paulo",
+        "AR" => "America/Argentina/Buenos_Aires",
+        "CL" => "America/Santiago",
+        "CO" => "America/Bogota",
+        "PE" => "America/Lima",
+        "ZA" => "Africa/Johannesburg",
+        "EG" => "Africa/Cairo",
+        "MA" => "Africa/Casablanca",
+        "NG" => "Africa/Lagos",
+        _ => "",
+    };
+    if !by_region.is_empty() {
+        return Some(by_region);
+    }
+    match language.as_str() {
+        "fr" => Some("Europe/Paris"),
+        "de" => Some("Europe/Berlin"),
+        "nl" => Some("Europe/Amsterdam"),
+        "es" => Some("Europe/Madrid"),
+        "it" => Some("Europe/Rome"),
+        "pt" => Some("Europe/Lisbon"),
+        "en" => Some("America/New_York"),
+        "pl" => Some("Europe/Warsaw"),
+        "cs" => Some("Europe/Prague"),
+        "sv" => Some("Europe/Stockholm"),
+        "nb" | "no" => Some("Europe/Oslo"),
+        "da" => Some("Europe/Copenhagen"),
+        "fi" => Some("Europe/Helsinki"),
+        "el" => Some("Europe/Athens"),
+        "ro" => Some("Europe/Bucharest"),
+        "hu" => Some("Europe/Budapest"),
+        "uk" => Some("Europe/Kyiv"),
+        "ru" => Some("Europe/Moscow"),
+        "tr" => Some("Europe/Istanbul"),
+        "he" => Some("Asia/Jerusalem"),
+        "ar" => Some("Asia/Riyadh"),
+        "hi" => Some("Asia/Kolkata"),
+        "zh" => Some("Asia/Shanghai"),
+        "ja" => Some("Asia/Tokyo"),
+        "ko" => Some("Asia/Seoul"),
+        "th" => Some("Asia/Bangkok"),
+        "vi" => Some("Asia/Ho_Chi_Minh"),
+        "id" => Some("Asia/Jakarta"),
+        _ => None,
+    }
+}
+
 impl LaunchOptions {
     pub fn validate(self) -> Result<Self, GatewayError> {
+        if let Some(timezone) = &self.timezone
+            && !is_timezone(timezone)
+        {
+            return Err(GatewayError::InvalidLaunchOptions(
+                "timezone must be an IANA time zone name such as Europe/Paris".into(),
+            ));
+        }
         if let Some(accept_language) = &self.accept_language
             && (accept_language.len() > 256 || language_args(accept_language).is_none())
         {
@@ -378,6 +503,29 @@ pub async fn launch(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // Chromium reads the zone for Intl and Date from TZ. Session zone first,
+    // then the server's own TZ (inherited), then a zone plausible for the
+    // language rather than the UTC a container would otherwise report.
+    let server_timezone = std::env::var("TZ")
+        .ok()
+        .filter(|tz| !tz.trim().is_empty());
+    let timezone = launch_options.timezone.clone().or_else(|| {
+        if server_timezone.is_some() {
+            return None;
+        }
+        // Without TZ and /etc/localtime, Chromium reports "Etc/Unknown", which
+        // no real browser does; UTC is the least bad last resort.
+        Some(
+            language_env
+                .as_deref()
+                .and_then(timezone_for_language)
+                .unwrap_or("UTC")
+                .to_string(),
+        )
+    });
+    if let Some(timezone) = timezone {
+        command.env("TZ", timezone);
+    }
     if let Some(primary) = language_env {
         command.env("LANGUAGE", primary);
     }
