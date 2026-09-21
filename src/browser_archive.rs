@@ -1,8 +1,9 @@
 //! On-demand installation of a browser archive chosen by the operator.
 //!
 //! The Pinokio image ships only the stock Chromium. With BROWSER_ARCHIVE_URL
-//! set, Pinokio downloads that `.tar.gz` on first start onto the operator's
-//! own volume and launches the `chrome` executable it contains. The archive's
+//! set, Pinokio downloads that archive (`.tar.gz` or `.zip`, detected from the
+//! file content) on first start onto the operator's own volume and launches
+//! the `chrome` executable it contains. The archive's
 //! SHA-256 is always computed and logged; when BROWSER_ARCHIVE_SHA256 is set
 //! too, a mismatch aborts the install. Pinokio has no opinion about which
 //! browser this is: the operator picks the build and accepts its publisher's
@@ -69,7 +70,7 @@ pub async fn ensure_installed(
         .map_err(|e| InstallError::Download(e.to_string()))?;
 
     let tag = format!("{}-{}", install_key(url), std::process::id());
-    let archive_path = root.join(format!(".download-{tag}.tar.gz"));
+    let archive_path = root.join(format!(".download-{tag}.archive"));
     let staging_dir = root.join(format!(".staging-{tag}"));
     let result = install(
         &client,
@@ -183,24 +184,61 @@ async fn download_to_file(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Unpacks the gzip tarball into `staging_dir` and returns the directory that
-/// holds `chrome` (the archive may wrap everything in one top-level folder).
-/// Files are made world-readable, directories and executables world-executable,
-/// since Pinokio runs as an unprivileged user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveFormat {
+    TarGz,
+    Zip,
+}
+
+/// Sniffs the archive format from its magic bytes rather than the URL, since
+/// download links do not always end with the file extension.
+fn detect_format(archive_path: &Path) -> Result<ArchiveFormat, InstallError> {
+    use std::io::Read;
+
+    let mut magic = [0u8; 4];
+    let read = std::fs::File::open(archive_path)?.read(&mut magic)?;
+    match &magic[..read] {
+        [0x1f, 0x8b, ..] => Ok(ArchiveFormat::TarGz),
+        [b'P', b'K', 0x03, 0x04] | [b'P', b'K', 0x05, 0x06] => Ok(ArchiveFormat::Zip),
+        _ => Err(InstallError::Archive(
+            "unrecognized archive format, expected a .tar.gz or .zip file".into(),
+        )),
+    }
+}
+
+/// Unpacks the archive (gzip tarball or zip) into `staging_dir` and returns the
+/// directory that holds `chrome` (the archive may wrap everything in one
+/// top-level folder). Files are made world-readable, directories and
+/// executables world-executable, since Pinokio runs as an unprivileged user.
 fn extract_archive(archive_path: &Path, staging_dir: &Path) -> Result<PathBuf, InstallError> {
     if staging_dir.exists() {
         std::fs::remove_dir_all(staging_dir)?;
     }
     std::fs::create_dir_all(staging_dir)?;
 
-    let file = std::fs::File::open(archive_path)?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-    archive.set_overwrite(true);
-    // `unpack` refuses entries that would escape the destination directory.
-    archive
-        .unpack(staging_dir)
-        .map_err(|e| InstallError::Archive(e.to_string()))?;
+    match detect_format(archive_path)? {
+        ArchiveFormat::TarGz => {
+            let file = std::fs::File::open(archive_path)?;
+            let decoder = flate2::read::GzDecoder::new(file);
+            let mut archive = tar::Archive::new(decoder);
+            archive.set_overwrite(true);
+            // `unpack` refuses entries that would escape the destination directory.
+            archive
+                .unpack(staging_dir)
+                .map_err(|e| InstallError::Archive(e.to_string()))?;
+        }
+        ArchiveFormat::Zip => {
+            // Chrome for Testing and Google's other builds ship as zip. `extract`
+            // sanitizes entry paths, restores unix modes and keeps symlinks inside
+            // the destination.
+            let file = std::fs::File::open(archive_path)?;
+            let mut archive =
+                zip::ZipArchive::new(file).map_err(|e| InstallError::Archive(e.to_string()))?;
+            archive
+                .extract(staging_dir)
+                .map_err(|e| InstallError::Archive(e.to_string()))?;
+        }
+    }
 
     let root = if staging_dir.join("chrome").is_file() {
         staging_dir.to_path_buf()

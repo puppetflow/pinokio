@@ -166,7 +166,7 @@ impl Config {
                     if !(url.starts_with("https://") || url.starts_with("http://")) {
                         return Err(invalid(
                             "BROWSER_ARCHIVE_URL",
-                            "expected an http(s) URL to a .tar.gz archive",
+                            "expected an http(s) URL to a .tar.gz or .zip archive",
                         ));
                     }
                     if let Some(sha256) = &sha256

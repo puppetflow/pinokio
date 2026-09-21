@@ -91,7 +91,7 @@ All configuration is done through environment variables, validated at startup. I
 | `QUEUE_TIMEOUT_MS` | `600000` | Maximum wait in the queue |
 | `CHROME_STARTUP_TIMEOUT_MS` | `15000` | Time Chromium gets to publish its CDP endpoint |
 | `SHUTDOWN_GRACE_PERIOD_MS` | `10000` | Time given to active sessions after SIGTERM/SIGINT |
-| `BROWSER_ARCHIVE_URL` | empty | `.tar.gz` containing a `chrome` executable, downloaded into `/opt/browsers` on first start and launched instead of the bundled Chromium |
+| `BROWSER_ARCHIVE_URL` | empty | `.tar.gz` or `.zip` containing a `chrome` executable, downloaded into `/opt/browsers` on first start and launched instead of the bundled Chromium |
 | `BROWSER_ARCHIVE_SHA256` | empty | Optional hex SHA-256 the archive must match; the actual hash is logged either way |
 | `CHROME_PATH` | auto | Browser binary. Unset: `/opt/browser/chrome` if present, else the downloaded archive, else `/usr/bin/chromium` |
 | `CHROME_HEADLESS` | `true` | Run with `--headless=new` |
@@ -110,7 +110,7 @@ The bundled Debian Chromium ships only the `en-US` locale pack. `--accept-lang` 
 
 The published image bundles one browser, the Debian `chromium` package at `/usr/bin/chromium`. Pinokio does not care which Chromium-based build it launches, though: Google Chrome, Chrome for Testing, or a patched build such as [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) all work as long as the binary speaks CDP and accepts the standard flags above. Two ways to use another one, both keeping third-party binaries out of the image and under the operator's own license acceptance:
 
-**Downloaded archive.** Set `BROWSER_ARCHIVE_URL` to a `.tar.gz` whose root (or single top-level directory) contains `chrome`. On first start Pinokio streams the archive into `/opt/browsers/<url-hash-prefix>/`, logs its SHA-256, extracts it and fixes permissions. Mount a volume at `/opt/browsers` so restarts skip the download; a new URL installs next to the previous one, re-publishing under the same URL requires clearing the volume. Optionally set `BROWSER_ARCHIVE_SHA256` to the hash published by the author: Pinokio then refuses anything else. A checksum or download failure aborts the install and the process exits non-zero. While the download runs, `/health` answers, `/ready` returns 503 with `browser_installing`, and session requests get 503 so clients retry.
+**Downloaded archive.** Set `BROWSER_ARCHIVE_URL` to a `.tar.gz` or `.zip` (format detected from the content, e.g. the Chrome for Testing `chrome-linux64.zip`) whose root (or single top-level directory) contains `chrome`. On first start Pinokio streams the archive into `/opt/browsers/<url-hash-prefix>/`, logs its SHA-256, extracts it and fixes permissions. Mount a volume at `/opt/browsers` so restarts skip the download; a new URL installs next to the previous one, re-publishing under the same URL requires clearing the volume. Optionally set `BROWSER_ARCHIVE_SHA256` to the hash published by the author: Pinokio then refuses anything else. A checksum or download failure aborts the install and the process exits non-zero. While the download runs, `/health` answers, `/ready` returns 503 with `browser_installing`, and session requests get 503 so clients retry.
 
 **Mounted directory.** Mount the whole browser directory (executable, shared libraries, resources) at `/opt/browser`; it takes precedence over a downloaded archive and over the bundled Chromium:
 
