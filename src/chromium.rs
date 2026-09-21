@@ -139,6 +139,58 @@ pub struct LaunchOptions {
     /// Comma-separated BCP 47 tags, e.g. "fr-FR,fr". Overrides the LANGUAGE
     /// environment variable for this session.
     pub accept_language: Option<String>,
+    /// User-Agent applied browser-wide with `--user-agent`, so pages, dedicated,
+    /// shared and service workers all report the same string. Defaults to the
+    /// binary's own UA without the "Headless" marker.
+    pub user_agent: Option<String>,
+    /// Page viewport the client will use. The window is sized so the inner
+    /// viewport matches it, and the emulated screen is a standard resolution
+    /// that fits the window, as on a desktop.
+    pub viewport: Option<Viewport>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Viewport {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Height of the tab strip and toolbar on a Linux Chrome window: outerHeight
+/// exceeds innerHeight by this much on a real desktop.
+const WINDOW_CHROME_HEIGHT: u32 = 87;
+const DEFAULT_VIEWPORT: Viewport = Viewport {
+    width: 1280,
+    height: 720,
+};
+/// Common desktop resolutions, smallest first; the first one that fits the
+/// window is reported as the screen.
+const SCREEN_SIZES: [(u32, u32); 3] = [(1920, 1080), (2560, 1440), (3840, 2160)];
+
+impl Viewport {
+    fn window_size(self) -> (u32, u32) {
+        (self.width, self.height + WINDOW_CHROME_HEIGHT)
+    }
+
+    fn screen_size(self) -> (u32, u32) {
+        let (width, height) = self.window_size();
+        SCREEN_SIZES
+            .into_iter()
+            .find(|(screen_width, screen_height)| width <= *screen_width && height <= *screen_height)
+            .unwrap_or((width, height))
+    }
+}
+
+/// Headed-desktop equivalent of the binary's headless UA: Chromium on Linux
+/// reports "X11; Linux x86_64" whatever the CPU, and the reduced UA keeps only
+/// the major version.
+pub fn default_user_agent(browser_version: Option<&str>) -> String {
+    let major = browser_version
+        .and_then(|version| version.split('.').next())
+        .filter(|major| !major.is_empty() && major.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or("0");
+    format!(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
 }
 
 /// Loose BCP 47 check: subtags of 1 to 8 alphanumerics separated by "-".
@@ -201,6 +253,24 @@ impl LaunchOptions {
                 "proxyBypassList contains invalid characters".into(),
             ));
         }
+        if let Some(user_agent) = &self.user_agent
+            && (user_agent.trim().is_empty()
+                || user_agent.len() > 512
+                || !user_agent
+                    .chars()
+                    .all(|c| c.is_ascii_graphic() || c == ' '))
+        {
+            return Err(GatewayError::InvalidLaunchOptions(
+                "userAgent must be printable ASCII of at most 512 characters".into(),
+            ));
+        }
+        if let Some(viewport) = &self.viewport
+            && !((100..=7680).contains(&viewport.width) && (100..=4320).contains(&viewport.height))
+        {
+            return Err(GatewayError::InvalidLaunchOptions(
+                "viewport width must be 100-7680 and height 100-4320".into(),
+            ));
+        }
 
         Ok(self)
     }
@@ -221,6 +291,7 @@ pub struct Chromium {
 pub async fn launch(
     config: &Config,
     launch_options: &LaunchOptions,
+    browser_version: Option<&str>,
 ) -> Result<Chromium, GatewayError> {
     let user_data_dir = TempDir::with_prefix("pinokio-")
         .map_err(|e| GatewayError::ChromiumUnavailable(format!("temp dir creation failed: {e}")))?;
@@ -228,7 +299,29 @@ pub async fn launch(
     let mut args: Vec<String> = Vec::new();
     if config.chrome_headless {
         args.push("--headless=new".into());
+        // New headless differs from a desktop Chrome in ways every bot check
+        // looks at: navigator.webdriver is true, the screen is 800x600 whatever
+        // the window, media queries report no pointer and no hover device, and
+        // there is not a single media device. Bring those back to desktop values.
+        args.push("--disable-blink-features=AutomationControlled".into());
+        args.push(
+            "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"
+                .into(),
+        );
+        args.push("--use-fake-device-for-media-stream".into());
+        let viewport = launch_options.viewport.unwrap_or(DEFAULT_VIEWPORT);
+        let (window_width, window_height) = viewport.window_size();
+        let (screen_width, screen_height) = viewport.screen_size();
+        args.push(format!("--window-size={window_width},{window_height}"));
+        args.push(format!("--screen-info={{{screen_width}x{screen_height}}}"));
     }
+    // --user-agent is the only override that reaches shared and service
+    // workers, which a CDP Emulation override on the page never does.
+    let user_agent = launch_options
+        .user_agent
+        .clone()
+        .unwrap_or_else(|| default_user_agent(browser_version));
+    args.push(format!("--user-agent={user_agent}"));
     args.push("--remote-debugging-port=0".into());
     args.push(format!(
         "--user-data-dir={}",
@@ -253,17 +346,20 @@ pub async fn launch(
         args.push("--disable-dev-shm-usage".into());
     }
     // Per-session acceptLanguage wins over the server-wide LANGUAGE variable.
-    // --lang only drives the UI locale and is ignored when the matching .pak
-    // is missing, so --accept-lang is always set too: it controls
-    // navigator.language and the Accept-Language header.
+    // On Linux, Chromium picks its application locale (UI strings and the
+    // default JavaScript Intl locale) from the LANGUAGE environment variable
+    // and ignores --lang for that, so the primary tag is passed as LANGUAGE to
+    // the process, otherwise every session would inherit the server-wide
+    // value. --accept-lang controls navigator.languages and Accept-Language.
     let language = launch_options
         .accept_language
         .as_deref()
         .or(config.language.as_deref());
-    if let Some((primary, accept)) = language.and_then(language_args) {
+    let language_env = language.and_then(language_args).map(|(primary, accept)| {
         args.push(format!("--lang={primary}"));
         args.push(format!("--accept-lang={accept}"));
-    }
+        primary
+    });
     if let Some(proxy_server) = &launch_options.proxy_server {
         args.push(format!("--proxy-server={proxy_server}"));
     }
@@ -282,6 +378,9 @@ pub async fn launch(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    if let Some(primary) = language_env {
+        command.env("LANGUAGE", primary);
+    }
 
     // Run Chromium in its own session/process group so the whole tree can
     // be signaled at once without touching unrelated processes.

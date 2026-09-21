@@ -160,7 +160,11 @@ async fn ws_handler(
 
     info!(%session_id, state = "starting", "session_starting");
     let starting_at = Instant::now();
-    let mut chromium = chromium::launch(&state.config, &launch_options)
+    let browser_version = state
+        .browser
+        .get()
+        .and_then(|browser| browser.version.as_deref());
+    let mut chromium = chromium::launch(&state.config, &launch_options, browser_version)
         .await
         .inspect_err(|e| log_admission_failure(&session_id, e))?;
     let startup_time = starting_at.elapsed();

@@ -18,8 +18,12 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
+        chromium-l10n \
         fonts-liberation \
         fonts-noto-color-emoji \
+        libegl1 \
+        libegl-mesa0 \
+        libgles2 \
         ca-certificates \
         curl \
         tini \

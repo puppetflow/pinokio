@@ -54,6 +54,8 @@ Session flow:
 
 Each session launches its own process with `--headless=new`, `--remote-debugging-port=0` and a unique temp `--user-data-dir`. The CDP port is read from the `DevToolsActivePort` file that Chromium writes in that directory; logs are never parsed. The CDP endpoint listens on 127.0.0.1 only and is never exposed.
 
+Headless sessions are made to look like a desktop Chrome, since the differences are exactly what bot checks score: `navigator.webdriver` is turned off (`--disable-blink-features=AutomationControlled`), the emulated screen is a standard desktop resolution that fits the window instead of 800x600 (`--screen-info`), the window is sized so the inner viewport matches the client's `viewport` (plus 87px of toolbar), media queries report a fine pointer with hover, and a microphone, camera and speaker are enumerable (`--use-fake-device-for-media-stream`). The User-Agent is set with `--user-agent` so pages, dedicated, shared and service workers all report the same string: the client's `userAgent` launch option, or the binary's own UA without its `Headless` marker. What remains visible is the software WebGL renderer (SwiftShader), which has no fix short of a GPU; the image ships Mesa's EGL libraries so `CHROME_EXTRA_ARGS=--use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist --enable-unsafe-swiftshader` reports a Mesa `llvmpipe` renderer instead, at the cost of about two seconds to create the first WebGL context in a session.
+
 Each Chromium runs in its own process group (setsid). Teardown signals only that group: SIGTERM, 3 s grace, then SIGKILL, then the child is reaped. In Docker, tini (PID 1) reaps any re-parented grandchildren. No global `pkill` is ever used.
 
 ## Endpoints
@@ -100,11 +102,11 @@ All configuration is done through environment variables, validated at startup. I
 | `CHROME_EXTRA_ARGS` | empty | Extra Chromium args, whitespace-separated |
 | `LOG_LEVEL` | `info` | trace, debug, info, warn, error |
 | `TZ` | system | Timezone inherited by Chromium |
-| `LANGUAGE` | system | Default browser language (`fr-FR` or `fr-FR:fr`), passed as Chromium `--lang` and `--accept-lang` |
+| `LANGUAGE` | system | Default browser language (`fr-FR` or `fr-FR:fr`), passed to Chromium as `--accept-lang` and as its own `LANGUAGE` environment |
 
-Clients cannot inject arbitrary Chromium launch arguments. The only per-session knobs are the JSON `launch` query parameter fields `proxyServer`, `proxyBypassList`, `disableWebSecurity` and `acceptLanguage` (comma-separated BCP 47 tags, overrides `LANGUAGE`); everything else is validated and mapped to fixed flags server-side. Other server-wide flags such as `--window-size` go in `CHROME_EXTRA_ARGS`.
+Clients cannot inject arbitrary Chromium launch arguments. The only per-session knobs are the JSON `launch` query parameter fields `proxyServer`, `proxyBypassList`, `disableWebSecurity`, `acceptLanguage` (comma-separated BCP 47 tags, overrides `LANGUAGE`), `userAgent` (printable ASCII, at most 512 characters, applied with `--user-agent`) and `viewport` (`{"width","height"}`, drives `--window-size` and `--screen-info`); everything else is validated and mapped to fixed flags server-side. Other server-wide flags go in `CHROME_EXTRA_ARGS`.
 
-The bundled Debian Chromium ships only the `en-US` locale pack. `--accept-lang` does not depend on locale packs, so websites receive the requested `Accept-Language` regardless. Only the browser UI strings and the default JavaScript `Intl` locale need the `chromium-l10n` package.
+On Linux, Chromium takes its application locale from the `LANGUAGE` environment variable and ignores `--lang`, so each session's primary tag is passed as `LANGUAGE` to the browser process. The image installs `chromium-l10n` next to the bundled Chromium so that locale has its pack: the default JavaScript `Intl` locale then matches `Accept-Language` (a French session resolves `Intl.DateTimeFormat().resolvedOptions().locale` to `fr`, a German one to `de`, not `en-US`), which is one of the consistency checks bot detection runs. `--accept-lang` does not depend on locale packs, so websites receive the requested `Accept-Language` regardless.
 
 ### Browser binary
 
